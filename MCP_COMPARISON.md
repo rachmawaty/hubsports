@@ -11,7 +11,7 @@ This document compares two implementations of HubSports:
 | Implementation | URL | Protocol |
 |---------------|-----|----------|
 | **REST API** | https://hubsports.rach.es | Custom REST |
-| **Official MCP** | https://mcp.rach.es | JSON-RPC 2.0 (MCP) |
+| **Official MCP** | https://hubsports-mcp.rach.es | JSON-RPC 2.0 (MCP) |
 
 ---
 
