@@ -2,6 +2,9 @@
 
 **Boston Sports Schedule MCP Agent**
 
+[![GitHub](https://img.shields.io/badge/GitHub-rachmawaty%2Fhubsports-blue?logo=github)](https://github.com/rachmawaty/hubsports)
+[![Live Demo](https://img.shields.io/badge/Live-159.223.203.27:8081-green)](http://159.223.203.27:8081/schedule)
+
 A simple MCP (Model Context Protocol) server that fetches upcoming game schedules for Boston's major sports teams:
 - 🏈 **New England Patriots** (NFL)
 - 🏀 **Boston Celtics** (NBA)
