@@ -1,47 +1,30 @@
 """
-HubSports - Official MCP (Model Context Protocol) Implementation
-Following: https://modelcontextprotocol.io/
+HubSports - MCP Server (Official SDK, Streamable HTTP Transport)
+Spec: https://modelcontextprotocol.io/
+SDK:  https://github.com/modelcontextprotocol/python-sdk
 """
 
-from fastapi import FastAPI, Request
-from pydantic import BaseModel
-from typing import List, Dict, Any, Optional, Literal
 import httpx
-from datetime import datetime, timezone, timedelta
-from dateutil import parser
 import logging
+from datetime import datetime, timezone, timedelta
+from dateutil import parser as dateparser
+from mcp.server.fastmcp import FastMCP
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="HubSports MCP Server", version="1.0.0")
-
 # ============================================================================
-# MCP PROTOCOL MODELS (JSON-RPC 2.0)
+# MCP SERVER
 # ============================================================================
 
-class JSONRPCRequest(BaseModel):
-    jsonrpc: Literal["2.0"] = "2.0"
-    id: Optional[str | int] = None
-    method: str
-    params: Optional[Dict[str, Any]] = None
-
-
-class JSONRPCResponse(BaseModel):
-    jsonrpc: Literal["2.0"] = "2.0"
-    id: Optional[str | int] = None
-    result: Optional[Dict[str, Any]] = None
-    error: Optional[Dict[str, Any]] = None
-
-
-class MCPError(BaseModel):
-    code: int
-    message: str
-    data: Optional[Any] = None
-
+mcp = FastMCP(
+    "HubSports",
+    instructions="Provides upcoming game schedules for Boston sports teams: Patriots (NFL), Celtics (NBA), Bruins (NHL), and Red Sox (MLB). Data is sourced live from ESPN.",
+    stateless_http=True,
+)
 
 # ============================================================================
-# ESPN API INTEGRATION (same as before)
+# ESPN API INTEGRATION
 # ============================================================================
 
 TEAMS = {
@@ -49,299 +32,133 @@ TEAMS = {
         "name": "New England Patriots",
         "sport": "NFL",
         "emoji": "🏈",
-        "api": "http://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/ne/schedule"
+        "api": "http://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/ne/schedule",
     },
     "celtics": {
         "name": "Boston Celtics",
         "sport": "NBA",
         "emoji": "🏀",
-        "api": "http://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/bos/schedule"
+        "api": "http://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/bos/schedule",
     },
     "bruins": {
         "name": "Boston Bruins",
         "sport": "NHL",
         "emoji": "🏒",
-        "api": "http://site.api.espn.com/apis/site/v2/sports/hockey/nhl/teams/bos/schedule"
+        "api": "http://site.api.espn.com/apis/site/v2/sports/hockey/nhl/teams/bos/schedule",
     },
     "redsox": {
         "name": "Boston Red Sox",
         "sport": "MLB",
         "emoji": "⚾",
-        "api": "http://site.api.espn.com/apis/site/v2/sports/baseball/mlb/teams/bos/schedule"
-    }
+        "api": "http://site.api.espn.com/apis/site/v2/sports/baseball/mlb/teams/bos/schedule",
+    },
 }
 
 
-async def fetch_team_schedule(team_key: str, days_ahead: int = 14) -> List[Dict[str, Any]]:
-    """Fetch upcoming games for a team from ESPN API"""
+async def fetch_team_schedule(team_key: str, days_ahead: int = 14) -> list[dict]:
     team = TEAMS[team_key]
-    
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(team["api"])
             response.raise_for_status()
             data = response.json()
-        
-        games = []
+
         now = datetime.now(timezone.utc)
         cutoff = now + timedelta(days=days_ahead)
-        
-        events = data.get("events", [])
-        
-        for event in events:
+        games = []
+
+        for event in data.get("events", []):
             try:
                 game_date_str = event.get("date")
                 if not game_date_str:
                     continue
-                
-                game_date = parser.parse(game_date_str)
-                
+                game_date = dateparser.parse(game_date_str)
                 if game_date < now or game_date > cutoff:
                     continue
-                
-                competitions = event.get("competitions", [])
-                if not competitions:
-                    continue
-                
-                comp = competitions[0]
-                competitors = comp.get("competitors", [])
-                
-                home_team = None
-                away_team = None
-                
-                for competitor in competitors:
-                    team_info = competitor.get("team", {})
+
+                comp = (event.get("competitions") or [{}])[0]
+                home_team, away_team = None, None
+                for competitor in comp.get("competitors", []):
+                    name = competitor.get("team", {}).get("displayName", "Unknown")
                     if competitor.get("homeAway") == "home":
-                        home_team = team_info.get("displayName", "Unknown")
+                        home_team = name
                     else:
-                        away_team = team_info.get("displayName", "Unknown")
-                
-                venue = comp.get("venue", {}).get("fullName", "TBD")
-                status = event.get("status", {}).get("type", {}).get("name", "Scheduled")
-                
-                game = {
+                        away_team = name
+
+                games.append({
                     "team": team["name"],
                     "sport": team["sport"],
                     "emoji": team["emoji"],
                     "date": game_date.isoformat(),
-                    "date_str": game_date.strftime("%a, %b %d at %I:%M %p"),
-                    "home": home_team,
-                    "away": away_team,
-                    "venue": venue,
-                    "status": status
-                }
-                
-                games.append(game)
-                
+                    "date_str": game_date.strftime("%a, %b %d at %I:%M %p UTC"),
+                    "home": home_team or "TBD",
+                    "away": away_team or "TBD",
+                    "venue": comp.get("venue", {}).get("fullName", "TBD"),
+                    "status": event.get("status", {}).get("type", {}).get("name", "Scheduled"),
+                })
             except Exception as e:
                 logger.warning(f"Error parsing game for {team_key}: {e}")
-                continue
-        
         return games
-        
+
     except Exception as e:
         logger.error(f"Failed to fetch schedule for {team_key}: {e}")
         return []
 
 
-async def get_all_upcoming_games(days_ahead: int = 14) -> List[Dict[str, Any]]:
-    """Get all upcoming games for all Boston teams"""
-    all_games = []
-    
-    for team_key in TEAMS.keys():
-        games = await fetch_team_schedule(team_key, days_ahead)
-        all_games.extend(games)
-    
-    all_games.sort(key=lambda g: g["date"])
-    
-    return all_games
-
-
 # ============================================================================
-# MCP PROTOCOL HANDLERS
+# MCP TOOLS
 # ============================================================================
 
-async def handle_initialize(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle MCP initialize request"""
-    return {
-        "protocolVersion": "2024-11-05",
-        "serverInfo": {
-            "name": "hubsports-mcp",
-            "version": "1.0.0"
-        },
-        "capabilities": {
-            "tools": {}
-        }
-    }
+@mcp.tool()
+async def get_boston_sports_schedule(team: str = "all", days: int = 14) -> str:
+    """
+    Get upcoming game schedules for Boston sports teams.
 
+    Args:
+        team: Team to query — "patriots", "celtics", "bruins", "redsox", or "all" (default: "all")
+        days: Number of days ahead to look (1–30, default: 14)
+    """
+    days = max(1, min(30, days))
 
-async def handle_tools_list(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle MCP tools/list request - return available tools"""
-    return {
-        "tools": [
-            {
-                "name": "get_boston_sports_schedule",
-                "description": "Get upcoming game schedules for Boston sports teams (Patriots, Celtics, Bruins, Red Sox). Returns game dates, matchups, venues, and status.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "team": {
-                            "type": "string",
-                            "enum": ["patriots", "celtics", "bruins", "redsox", "all"],
-                            "description": "Which team to get schedule for, or 'all' for all teams",
-                            "default": "all"
-                        },
-                        "days": {
-                            "type": "integer",
-                            "description": "Number of days ahead to search (1-30)",
-                            "default": 14,
-                            "minimum": 1,
-                            "maximum": 30
-                        }
-                    }
-                }
-            }
-        ]
-    }
-
-
-async def handle_tools_call(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle MCP tools/call request - execute a tool"""
-    tool_name = params.get("name")
-    arguments = params.get("arguments", {})
-    
-    if tool_name != "get_boston_sports_schedule":
-        raise ValueError(f"Unknown tool: {tool_name}")
-    
-    # Extract parameters
-    team = arguments.get("team", "all")
-    days = arguments.get("days", 14)
-    
-    # Validate
-    if days < 1 or days > 30:
-        days = 14
-    
-    # Fetch games
     if team == "all":
-        games = await get_all_upcoming_games(days)
+        all_games = []
+        for key in TEAMS:
+            all_games.extend(await fetch_team_schedule(key, days))
+        all_games.sort(key=lambda g: g["date"])
     elif team in TEAMS:
-        games = await fetch_team_schedule(team, days)
+        all_games = await fetch_team_schedule(team, days)
     else:
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": f"Error: Unknown team '{team}'. Valid teams: patriots, celtics, bruins, redsox, all"
-                }
-            ],
-            "isError": True
-        }
-    
-    # Format response
-    if not games:
-        text = f"No upcoming games found for {team} in the next {days} days."
-    else:
-        lines = [f"🏒 Upcoming Boston Sports ({len(games)} games in next {days} days):\n"]
-        for game in games[:10]:  # Limit to 10 for readability
-            lines.append(
-                f"{game['emoji']} {game['sport']}: "
-                f"{game['away']} @ {game['home']}\n"
-                f"   📅 {game['date_str']}\n"
-                f"   📍 {game['venue']}\n"
-            )
-        text = "\n".join(lines)
-    
-    return {
-        "content": [
-            {
-                "type": "text",
-                "text": text
-            }
-        ],
-        "isError": False
-    }
+        return f"Unknown team '{team}'. Valid options: {', '.join(TEAMS.keys())}, all"
+
+    if not all_games:
+        label = TEAMS[team]["name"] if team != "all" else "any Boston team"
+        return f"No upcoming games found for {label} in the next {days} days."
+
+    label = TEAMS[team]["name"] if team != "all" else "All Boston Teams"
+    lines = [f"📅 {label} — Next {days} Days ({len(all_games)} games)\n"]
+    for g in all_games:
+        lines.append(
+            f"{g['emoji']} {g['sport']}: {g['away']} @ {g['home']}\n"
+            f"   📅 {g['date_str']}\n"
+            f"   📍 {g['venue']}  |  {g['status']}\n"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def list_supported_teams() -> str:
+    """List all Boston sports teams supported by HubSports."""
+    lines = ["🏙️ HubSports — Supported Teams\n"]
+    for key, info in TEAMS.items():
+        lines.append(f"{info['emoji']} {info['name']} ({info['sport']})  →  key: \"{key}\"")
+    return "\n".join(lines)
 
 
 # ============================================================================
-# MCP JSON-RPC ENDPOINT
+# ENTRYPOINT — expose ASGI app for uvicorn (Streamable HTTP at /mcp)
 # ============================================================================
 
-@app.post("/mcp")
-async def mcp_endpoint(request: Request):
-    """
-    Official MCP endpoint using JSON-RPC 2.0
-    
-    This follows the Model Context Protocol specification from:
-    https://modelcontextprotocol.io/
-    """
-    try:
-        body = await request.json()
-        rpc_request = JSONRPCRequest(**body)
-        
-        logger.info(f"MCP Request: {rpc_request.method}")
-        
-        # Route to appropriate handler
-        if rpc_request.method == "initialize":
-            result = await handle_initialize(rpc_request.params or {})
-        
-        elif rpc_request.method == "tools/list":
-            result = await handle_tools_list(rpc_request.params or {})
-        
-        elif rpc_request.method == "tools/call":
-            result = await handle_tools_call(rpc_request.params or {})
-        
-        else:
-            return JSONRPCResponse(
-                id=rpc_request.id,
-                error=MCPError(
-                    code=-32601,
-                    message=f"Method not found: {rpc_request.method}"
-                ).dict()
-            ).dict()
-        
-        return JSONRPCResponse(
-            id=rpc_request.id,
-            result=result
-        ).dict()
-        
-    except Exception as e:
-        logger.error(f"MCP Error: {e}")
-        return JSONRPCResponse(
-            id=body.get("id") if isinstance(body, dict) else None,
-            error=MCPError(
-                code=-32603,
-                message=str(e)
-            ).dict()
-        ).dict()
-
-
-# ============================================================================
-# INFO ENDPOINTS
-# ============================================================================
-
-@app.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "name": "HubSports MCP Server",
-        "version": "1.0.0",
-        "protocol": "Model Context Protocol (MCP)",
-        "spec": "https://modelcontextprotocol.io/",
-        "endpoints": {
-            "/mcp": "Official MCP JSON-RPC 2.0 endpoint",
-            "/docs": "OpenAPI/Swagger documentation"
-        },
-        "available_tools": [
-            "get_boston_sports_schedule"
-        ]
-    }
-
-
-@app.get("/health")
-async def health():
-    """Health check"""
-    return {"status": "healthy", "protocol": "MCP"}
-
+app = mcp.streamable_http_app()
 
 if __name__ == "__main__":
     import uvicorn
